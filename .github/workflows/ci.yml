@@ -1,32 +1,41 @@
-name: CI Pipeline
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-      - name: Build Docker image
-        run: docker build -t my-envoy-image:latest .
-      - name: Run eBPF security tests
-        run: |
-          docker run --rm --cap-add SYS_ADMIN my-envoy-image:latest /usr/local/bin/ebpf_tests
-      - name: Scan for vulnerabilities
-        run: |
-          docker run --rm aquasec/trivy image my-envoy-image:latest
-      - name: Test Envoy functionality
-        run: |
-          docker run -d --name envoy -p 10000:10000 my-envoy-image:latest
-          sleep 5
-          curl -f http://localhost:10000 || exit 1
-          docker stop envoy
-      - name: Push to registry
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-          docker push my-envoy-image:latest
+stages:
+  - verify
+  - build
+  - test
+  - scan
+  - deploy
+verify:
+  stage: verify
+  image: alpine:3.20
+  script:
+    - apk add --no-cache coreutils
+    - sha256sum -c checksums.sha256 || exit 1
+build:
+  stage: build
+  image: docker:stable
+  services:
+    - docker:dind
+  script:
+    - docker build -t my-envoy-image:latest .
+  artifacts:
+    paths:
+      - my-envoy-image.tar
+test:
+  stage: test
+  image: my-envoy-image:latest
+  script:
+    - /usr/local/bin/ebpf_tests
+    - apk add --no-cache curl
+    - curl -f http://localhost:10000 || exit 1
+scan:
+  stage: scan
+  image: aquasec/trivy:latest
+  script:
+    - trivy image my-envoy-image:latest
+deploy:
+  stage: deploy
+  script:
+    - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+    - docker push my-envoy-image:latest
+  only:
+    - main
